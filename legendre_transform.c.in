@@ -1,0 +1,232 @@
+     #include <stdlib.h>
+#include <malloc.h>
+
+#ifndef INLINE
+# if __STDC_VERSION__ >= 199901L
+#  define INLINE inline
+# else
+#  define INLINE
+# endif
+#endif
+
+#if (!defined(ENABLE_SSE2) && !defined(ENABLE_AVX))
+
+#if (defined (__AVX__))
+#define ENABLE_AVX
+
+#if (defined (__FMA4__))
+#define ENABLE_FMA4
+#endif
+
+#elif (defined(__SSE2__))
+#define ENABLE_SSE2
+#else
+#error NO SIMD, compile with -march=native
+#endif
+
+#endif
+
+#ifdef ENABLE_AVX
+
+#include <immintrin.h>
+
+#ifdef ENABLE_FMA4
+#include <x86intrin.h>
+#endif
+
+#define VLEN_d 4
+#define VLEN_s 8
+
+typedef __m256d vecd;
+typedef __m256 vecs;
+
+static INLINE vecd vloadu_d(double *p) { return _mm256_loadu_pd(p); }
+static INLINE void vstoreu_d(double *p, vecd v) { _mm256_storeu_pd(p, v); }
+static INLINE vecd vadd_d(vecd x, vecd y) { return _mm256_add_pd(x, y); }
+static INLINE vecd vsub_d(vecd x, vecd y) { return _mm256_sub_pd(x, y); }
+static INLINE vecd vmul_d(vecd x, vecd y) { return _mm256_mul_pd(x, y); }
+static INLINE vecd vcast_d(double d) { return _mm256_set_pd(d, d, d, d); }
+static INLINE vecd vbroadcast_d(double *p) {
+    return _mm256_broadcast_sd(p);
+}
+
+static INLINE vecs vloadu_s(float *p) { return _mm256_loadu_ps(p); }
+static INLINE void vstoreu_s(float *p, vecs v) { _mm256_storeu_ps(p, v); }
+static INLINE vecs vadd_s(vecs x, vecs y) { return _mm256_add_ps(x, y); }
+static INLINE vecs vsub_s(vecs x, vecs y) { return _mm256_sub_ps(x, y); }
+static INLINE vecs vmul_s(vecs x, vecs y) { return _mm256_mul_ps(x, y); }
+static INLINE vecs vcast_s(float x) { return _mm256_set_ps(x, x, x, x, x, x, x, x); }
+static INLINE vecs vbroadcast_s(float *p) {
+    return _mm256_broadcast_ss(p);
+}
+
+
+
+#ifdef ENABLE_FMA4
+static INLINE vecd vmacc_d(vecd x, vecd y, vecd z) {
+    return _mm256_macc_pd(x, y, z);
+}
+static INLINE vecs vmacc_s(vecs x, vecs y, vecs z) {
+    return _mm256_macc_ps(x, y, z);
+}
+#else
+static INLINE vecd vmacc_d(vecd x, vecd y, vecd z) {
+    return vadd_d(vmul_d(x, y), z);
+}
+static INLINE vecs vmacc_s(vecs x, vecs y, vecs z) {
+    return vadd_s(vmul_s(x, y), z);
+}
+#endif
+
+#endif
+
+
+#ifdef ENABLE_SSE2
+
+#include <immintrin.h>
+
+#define VLEN_d 2
+#define VLEN_s 4
+
+typedef __m128d vecd;
+typedef __m128 vecs;
+
+static INLINE vecd vloadu_d(double *p) { return _mm_loadu_pd(p); }
+static INLINE void vstoreu_d(double *p, vecd v) { _mm_storeu_pd(p, v); }
+static INLINE vecd vadd_d(vecd x, vecd y) { return _mm_add_pd(x, y); }
+static INLINE vecd vsub_d(vecd x, vecd y) { return _mm_sub_pd(x, y); }
+static INLINE vecd vmul_d(vecd x, vecd y) { return _mm_mul_pd(x, y); }
+static INLINE vecd vmacc_d(vecd x, vecd y, vecd z) {
+    return vadd_d(vmul_d(x, y), z);
+}
+static INLINE vecd vcast_d(double d) { return _mm_set_pd(d, d); }
+static INLINE vecd vbroadcast_d(double *p) {
+    return _mm_set_pd(*p, *p);
+}
+
+static INLINE vecs vloadu_s(float *p) { return _mm_loadu_ps(p); }
+static INLINE void vstoreu_s(float *p, vecs v) { _mm_storeu_ps(p, v); }
+static INLINE vecs vadd_s(vecs x, vecs y) { return _mm_add_ps(x, y); }
+static INLINE vecs vsub_s(vecs x, vecs y) { return _mm_sub_ps(x, y); }
+static INLINE vecs vmul_s(vecs x, vecs y) { return _mm_mul_ps(x, y); }
+static INLINE vecs vmacc_s(vecs x, vecs y, vecs z) {
+    return vadd_s(vmul_s(x, y), z);
+}
+static INLINE vecs vcast_s(float x) { return _mm_set_ps(x, x, x, x); }
+static INLINE vecs vbroadcast_s(float *p) {
+    return _mm_set_ps(*p, *p, *p, *p);
+}
+
+
+
+#endif
+
+/*{ for scalar, T in [("double", "d"), ("float", "s")] }*/
+/*{ for cs in range(1, 7) }*/
+static void legendre_transform_vec{{cs}}_{{T}}({{scalar}} *recfacs, {{scalar}} *bl, size_t lmax,
+                                               {{scalar}} xarr[({{cs}}) * VLEN_{{T}}],
+                                               {{scalar}} out[({{cs}}) * VLEN_{{T}}]) {
+    /*{ for i in range(cs) }*/
+    vec{{T}} P_{{i}}, Pm1_{{i}}, Pm2_{{i}}, x{{i}}, y{{i}};
+    /*{ endfor }*/
+    vec{{T}} W1, W2, b, R;
+    ssize_t l;
+
+    /*{ for i in range(cs) }*/
+    x{{i}} = vloadu_{{T}}(xarr + {{i}} * VLEN_{{T}});
+    Pm1_{{i}} = vcast_{{T}}(1.0);
+    P_{{i}} = x{{i}};
+    b = vbroadcast_{{T}}(bl);
+    y{{i}} = vmul_{{T}}(Pm1_{{i}}, b);
+    /*{ endfor }*/
+    
+    b = vbroadcast_{{T}}(bl + 1);
+    /*{ for i in range(cs) }*/
+    y{{i}} = vmacc_{{T}}(P_{{i}}, b, y{{i}});
+    /*{ endfor }*/
+
+    for (l = 2; l <= lmax; ++l) {
+        b = vbroadcast_{{T}}(bl + l);
+        R = vbroadcast_{{T}}(recfacs + l);
+        
+        /* 
+           P = x * Pm1 + recfacs[l] * (x * Pm1 - Pm2)
+        */
+        /*{ for i in range(cs) }*/
+        Pm2_{{i}} = Pm1_{{i}}; Pm1_{{i}} = P_{{i}};
+        W1 = vmul_{{T}}(x{{i}}, Pm1_{{i}});
+        W2 = W1;
+        W2 = vsub_{{T}}(W2, Pm2_{{i}});
+        P_{{i}} = vmacc_{{T}}(W2, R, W1);
+        y{{i}} = vmacc_{{T}}(P_{{i}}, b, y{{i}});
+        /*{ endfor }*/
+
+    }
+    /*{ for i in range(cs) }*/
+    vstoreu_{{T}}(out + {{i}} * VLEN_{{T}}, y{{i}});
+    /*{ endfor }*/
+}
+/*{ endfor }*/
+/*{ endfor }*/
+
+
+/*{ for scalar, T in [("double", "d"), ("float", "s")] }*/
+void legendre_transform_recfac_{{T}}({{scalar}} *r, size_t lmax) {
+    /* (l - 1) / l, for l >= 2 */
+    size_t l;
+    r[0] = 0;
+    r[1] = 1;
+    for (l = 2; l <= lmax; ++l) {
+        r[l] = ({{scalar}})(l - 1) / ({{scalar}})l;
+    }
+}
+/*{ endfor }*/
+
+/*
+  Compute sum_l b_l P_l(x_i) for all i. 
+ */
+
+/*{set cs=4}*/
+
+#define CS {{cs}}
+#define LEN_d (CS * VLEN_d)
+#define LEN_s (CS * VLEN_s)
+
+/*{ for scalar, T in [("double", "d"), ("float", "s")] }*/
+void legendre_transform_{{T}}({{scalar}} *bl,
+                              {{scalar}} *recfac,
+                              size_t lmax,
+                              {{scalar}} *x, {{scalar}} *out, size_t nx) {
+    {{scalar}} xchunk[LEN_{{T}}], outchunk[LEN_{{T}}];
+    int compute_recfac;
+    size_t i, j, len;
+
+    compute_recfac = (recfac == NULL);
+    if (compute_recfac) {
+        recfac = memalign(16, sizeof({{scalar}}) * (lmax + 1));
+        legendre_transform_recfac_{{T}}(recfac, lmax);
+    }
+
+    for (j = 0; j != LEN_{{T}}; ++j) xchunk[j] = 0;
+
+    for (i = 0; i < nx; i += LEN_{{T}}) {
+        len = (i + (LEN_{{T}}) <= nx) ? (LEN_{{T}}) : (nx - i);
+        for (j = 0; j != len; ++j) xchunk[j] = x[i + j];
+        switch ((len + VLEN_{{T}} - 1) / VLEN_{{T}}) {
+          case 6: legendre_transform_vec6_{{T}}(recfac, bl, lmax, xchunk, outchunk); break;
+          case 5: legendre_transform_vec5_{{T}}(recfac, bl, lmax, xchunk, outchunk); break;
+          case 4: legendre_transform_vec4_{{T}}(recfac, bl, lmax, xchunk, outchunk); break;
+          case 3: legendre_transform_vec3_{{T}}(recfac, bl, lmax, xchunk, outchunk); break;
+          case 2: legendre_transform_vec2_{{T}}(recfac, bl, lmax, xchunk, outchunk); break;
+          case 1:
+          case 0:
+              legendre_transform_vec1_{{T}}(recfac, bl, lmax, xchunk, outchunk); break;
+        }
+        for (j = 0; j != len; ++j) out[i + j] = outchunk[j];
+    }
+    if (compute_recfac) {
+        free(recfac);
+    }
+}
+/*{ endfor }*/
+
